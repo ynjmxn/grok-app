@@ -7,16 +7,30 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 const EVENT_DATA: &str = "terminal://data";
 const EVENT_EXIT: &str = "terminal://exit";
+
+/// Coalesce window for `terminal://data` (flood of 8KiB reads).
+pub const PTY_DATA_FLUSH_MS: u64 = 16;
+/// Flush once the batch reaches this many UTF-8 bytes.
+pub const PTY_DATA_FLUSH_CHARS: usize = 4096;
+
+pub fn should_flush_pty_data(pending_chars: usize, force: bool) -> bool {
+    if pending_chars == 0 {
+        return false;
+    }
+    force || pending_chars >= PTY_DATA_FLUSH_CHARS
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +59,10 @@ struct PtyExitPayload {
 struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Unix process-group kill only; Windows uses `ChildKiller`.
+    #[cfg(unix)]
+    pid: Option<u32>,
 }
 
 fn sessions() -> &'static Mutex<HashMap<String, PtySession>> {
@@ -61,7 +79,7 @@ fn resolve_shell() -> String {
     }
     #[cfg(windows)]
     {
-        return "powershell.exe".into();
+        "powershell.exe".into()
     }
     #[cfg(not(windows))]
     {
@@ -177,8 +195,10 @@ pub fn spawn(
         .take_writer()
         .map_err(|e| format!("take writer: {e}"))?;
 
-    // Move child into a waiter; keep nothing in the map that would Drop-kill early.
-    // Killing is done by dropping master/writer (SIGHUP) via kill().
+    // Waiter owns Child; kill() uses clone_killer so we can signal while wait() blocks.
+    let killer = child.clone_killer();
+    #[cfg(unix)]
+    let pid = child.process_id();
     let (exit_tx, exit_rx) = std::sync::mpsc::channel::<Option<u32>>();
     thread::Builder::new()
         .name(format!("pty-child-{sid}"))
@@ -197,12 +217,53 @@ pub fn spawn(
             PtySession {
                 writer,
                 master: pair.master,
+                killer,
+                #[cfg(unix)]
+                pid,
             },
         );
     }
 
     let app_r = app.clone();
     let sid_r = sid.clone();
+    let app_emit = app_r.clone();
+    let sid_emit = sid_r.clone();
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::Builder::new()
+        .name(format!("pty-emit-{sid}"))
+        .spawn(move || {
+            let mut batch = String::new();
+            let flush = |batch: &mut String, force: bool| {
+                if !should_flush_pty_data(batch.len(), force) {
+                    return;
+                }
+                if batch.is_empty() {
+                    return;
+                }
+                let data = std::mem::take(batch);
+                let _ = app_emit.emit(
+                    EVENT_DATA,
+                    &PtyDataPayload {
+                        session_id: sid_emit.clone(),
+                        data,
+                    },
+                );
+            };
+            loop {
+                match rx.recv_timeout(Duration::from_millis(PTY_DATA_FLUSH_MS)) {
+                    Ok(chunk) => {
+                        batch.push_str(&chunk);
+                        flush(&mut batch, false);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => flush(&mut batch, true),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        flush(&mut batch, true);
+                        break;
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("spawn pty emit: {e}"))?;
     thread::Builder::new()
         .name(format!("pty-read-{sid}"))
         .spawn(move || {
@@ -239,26 +300,16 @@ pub fn spawn(
                         if data.is_empty() {
                             continue;
                         }
-                        let _ = app_r.emit(
-                            EVENT_DATA,
-                            &PtyDataPayload {
-                                session_id: sid_r.clone(),
-                                data,
-                            },
-                        );
+                        if tx.send(data).is_err() {
+                            break;
+                        }
                     }
                     Err(_) => break,
                 }
             }
             if !pending.is_empty() {
                 let data = String::from_utf8_lossy(&pending).into_owned();
-                let _ = app_r.emit(
-                    EVENT_DATA,
-                    &PtyDataPayload {
-                        session_id: sid_r.clone(),
-                        data,
-                    },
-                );
+                let _ = tx.send(data);
             }
             // Only remove *this* id — never a later remount (unique UUID).
             if let Ok(mut g) = sessions().lock() {
@@ -323,8 +374,23 @@ pub fn kill(session_id: &str) -> Result<(), String> {
     let mut g = sessions()
         .lock()
         .map_err(|e| format!("sessions lock: {e}"))?;
-    // Dropping master/writer closes the PTY → child gets SIGHUP → reader EOF.
-    g.remove(session_id);
+    let Some(mut sess) = g.remove(session_id) else {
+        return Ok(());
+    };
+    drop(g);
+    let _ = sess.killer.kill();
+    #[cfg(unix)]
+    if let Some(pid) = sess.pid {
+        if pid > 1 {
+            // SIGHUP + closed PTY is not enough for jobs that ignore hangup.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+    // Drop master/writer after signalling so the slave EOF races the kill.
+    drop(sess);
     Ok(())
 }
 
@@ -337,12 +403,28 @@ mod tests {
     }
 
     #[test]
+    fn pty_data_flushes_on_size_or_force() {
+        assert!(!should_flush_pty_data(0, false));
+        assert!(!should_flush_pty_data(0, true));
+        assert!(!should_flush_pty_data(16, false));
+        assert!(should_flush_pty_data(16, true));
+        assert!(should_flush_pty_data(PTY_DATA_FLUSH_CHARS, false));
+        assert!(should_flush_pty_data(PTY_DATA_FLUSH_CHARS + 1, false));
+    }
+
+    #[test]
     fn interactive_term_env_advertises_truecolor() {
         let mut cmd = CommandBuilder::new("zsh");
         apply_interactive_term_env(&mut cmd);
         assert_eq!(env_str(&cmd, "TERM").as_deref(), Some("xterm-256color"));
         assert_eq!(env_str(&cmd, "COLORTERM").as_deref(), Some("truecolor"));
         assert_eq!(env_str(&cmd, "TERM_PROGRAM").as_deref(), Some("grok-app"));
+    }
+
+    #[test]
+    fn kill_unknown_session_is_ok() {
+        assert!(kill("pty_missing").is_ok());
+        assert!(kill("pty_missing").is_ok());
     }
 
     #[test]

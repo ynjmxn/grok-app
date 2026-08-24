@@ -10,7 +10,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import * as api from "@/lib/api";
 import { createT } from "@/i18n";
@@ -23,6 +22,7 @@ import {
 import { resolveChangesPreviewEmptyState } from "@/lib/resourceChangesHonesty";
 import { EmbeddedBrowser } from "@/components/EmbeddedBrowser";
 import { OverlayScroll } from "@/components/OverlayScroll";
+import { VirtualList } from "@/components/VirtualList";
 import { detectAppPlatform, revealInOsLabel } from "@/lib/appPlatform";
 import {
   IconChevronDown,
@@ -71,6 +71,13 @@ import {
 import {
   setActiveTab,
 } from "@/lib/resourceTabs";
+import {
+  RESOURCE_TREE_ROW_HEIGHT_PX,
+  RESOURCE_TREE_VIRTUALIZE_THRESHOLD,
+  flattenVisibleResourceTree,
+  replaceResourceTreeChildren,
+  sessionChangePathsKey,
+} from "@/lib/resourceTree";
 import {
   asideSurfaceFromPreviewKind,
   type AsideSurface,
@@ -567,6 +574,54 @@ export function ResourceViewer({
     setQuery("");
   }, [projectPath, refresh, resetTabs]);
 
+  /**
+   * Soft-refresh the files tree when the agent creates/edits files.
+   * Keeps expand state; re-lists root + currently expanded dirs so new
+   * entries appear without closing/reopening the pane (#863).
+   */
+  const sessionChangeKey = useMemo(
+    () => sessionChangePathsKey(sessionChanges.map((c) => c.path)),
+    [sessionChanges],
+  );
+  const sessionChangeKeySeen = useRef("");
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+
+  useEffect(() => {
+    sessionChangeKeySeen.current = "";
+  }, [projectPath]);
+
+  const softRefreshTree = useCallback(async () => {
+    if (!projectPath) return;
+    try {
+      let next = await loadDir("");
+      const openDirs = Object.entries(expandedRef.current)
+        .filter(([, open]) => open)
+        .map(([path]) => path)
+        .filter((path) => path.length > 0);
+      for (const dir of openDirs) {
+        try {
+          const children = await loadDir(dir);
+          next = replaceResourceTreeChildren(next, dir, children);
+        } catch {
+          /* leave prior children for this dir */
+        }
+      }
+      setRoot(next);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [loadDir, projectPath]);
+
+  useEffect(() => {
+    if (!projectPath || !paneActive) return;
+    if (sessionChangeKeySeen.current === sessionChangeKey) return;
+    sessionChangeKeySeen.current = sessionChangeKey;
+    // Empty key: nothing to sync (still record so a later first write refreshes).
+    if (!sessionChangeKey) return;
+    void softRefreshTree();
+  }, [sessionChangeKey, projectPath, paneActive, softRefreshTree]);
+
   const toggleDir = async (node: TreeNode) => {
     const key = node.relativePath;
     const willOpen = !expanded[key];
@@ -749,52 +804,14 @@ export function ResourceViewer({
     [query],
   );
 
-  const renderTree = (nodes: TreeNode[], depth: number): ReactNode =>
-    nodes
-      .filter((n) => filterMatch(n.name, n.relativePath) || n.isDir)
-      .map((n) => {
-        const isOpen = !!expanded[n.relativePath];
-        const active = activeTab?.relativePath === n.relativePath;
-        return (
-          <div key={n.relativePath || n.name}>
-            <Tip label={n.relativePath}>
-              <button
-                type="button"
-                className={
-                  "rp-tree__row" +
-                  (active ? " is-active" : "") +
-                  (n.isDir ? " is-dir" : "")
-                }
-                style={{ paddingLeft: 8 + depth * 12 }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  if (n.isDir) void toggleDir(n);
-                  else void openFile(n.relativePath);
-                }}
-              >
-                <span className="rp-tree__chev">
-                  {n.isDir ? (
-                    isOpen ? (
-                      <IconChevronDown size={12} />
-                    ) : (
-                      <IconChevronRight size={12} />
-                    )
-                  ) : (
-                    <span className="rp-tree__gap" />
-                  )}
-                </span>
-                <FileKindMark name={n.name} isDir={n.isDir} />
-                <span className="rp-tree__name">{n.name}</span>
-              </button>
-            </Tip>
-            {n.isDir && isOpen && n.children && n.children.length > 0 && (
-              <div className="rp-tree__kids">
-                {renderTree(n.children, depth + 1)}
-              </div>
-            )}
-          </div>
-        );
-      });
+  const visibleRows = useMemo(
+    () =>
+      flattenVisibleResourceTree(root, expanded, (n) =>
+        filterMatch(n.name, n.relativePath) || !!n.isDir,
+      ),
+    [root, expanded, filterMatch],
+  );
+  const selectedTreeKey = activeTab?.relativePath || null;
 
 
   const previewBody = (
@@ -1626,7 +1643,50 @@ export function ResourceViewer({
                     {tr("resources.empty")}
                   </div>
                 ) : (
-                  renderTree(root, 0)
+                  <VirtualList
+                    items={visibleRows}
+                    getKey={(row) => row.node.relativePath || row.node.name}
+                    rowHeight={RESOURCE_TREE_ROW_HEIGHT_PX}
+                    threshold={RESOURCE_TREE_VIRTUALIZE_THRESHOLD}
+                    scrollToKey={selectedTreeKey}
+                    renderItem={(row) => {
+                      const n = row.node;
+                      const isOpen = !!expanded[n.relativePath];
+                      const active = activeTab?.relativePath === n.relativePath;
+                      return (
+                        <Tip label={n.relativePath}>
+                          <button
+                            type="button"
+                            className={
+                              "rp-tree__row" +
+                              (active ? " is-active" : "") +
+                              (n.isDir ? " is-dir" : "")
+                            }
+                            style={{ paddingLeft: 8 + row.depth * 12 }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (n.isDir) void toggleDir(n);
+                              else void openFile(n.relativePath);
+                            }}
+                          >
+                            <span className="rp-tree__chev">
+                              {n.isDir ? (
+                                isOpen ? (
+                                  <IconChevronDown size={12} />
+                                ) : (
+                                  <IconChevronRight size={12} />
+                                )
+                              ) : (
+                                <span className="rp-tree__gap" />
+                              )}
+                            </span>
+                            <FileKindMark name={n.name} isDir={n.isDir} />
+                            <span className="rp-tree__name">{n.name}</span>
+                          </button>
+                        </Tip>
+                      );
+                    }}
+                  />
                 )}
               </OverlayScroll>
                 </>

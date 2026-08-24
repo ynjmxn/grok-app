@@ -1380,6 +1380,7 @@ impl AcpClient {
             // --disallowed-tools which is headless-only). Official route / inject
             // off removes the managed hook file.
             let _ = crate::official_aux::sync_native_media_block_hook_for_current(prep_mode);
+            let _ = crate::extensions::sync_user_mcp_for_official_aux_inject(prep_mode);
             // Heal duplicate keys left by older upsert bugs (e.g. yolo vs yolo_mode).
             // Valid configs are never rewritten. Soft-fail so spawn still attempts.
             match crate::agent_home_config::ensure_agent_home_config_sane(prep_mode) {
@@ -2478,9 +2479,9 @@ pub fn parse_usage_update(kind: &str, update: &Value) -> Option<AcpEvent> {
     // Normalize source so the frontend occupancy classifier matches CLI events.
     let source = if kind == "auto_compact_started" || kind.ends_with("auto_compact_started") {
         "auto_compact_started".to_string()
-    } else if kind == "tokens_used" {
-        "tokens_used".to_string()
-    } else if occupancy.is_some() && input.is_none() && output.is_none() && kind.is_empty() {
+    } else if kind == "tokens_used"
+        || (occupancy.is_some() && input.is_none() && output.is_none() && kind.is_empty())
+    {
         "tokens_used".to_string()
     } else {
         kind.to_string()
@@ -4905,8 +4906,8 @@ mod context_tokens_tests {
         let windows = parse_model_context_tokens(&init);
         assert_eq!(windows.len(), 1);
         assert_eq!(windows.get("has-window"), Some(&128000));
-        assert!(windows.get("no-window").is_none());
-        assert!(windows.get("no-meta").is_none());
+        assert!(!windows.contains_key("no-window"));
+        assert!(!windows.contains_key("no-meta"));
     }
 
     #[test]

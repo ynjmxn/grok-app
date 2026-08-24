@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
-use uuid::Uuid;
 
 use crate::acp_client::{
     provider_retry_abort_error, provider_retry_abort_rpc_message, should_abort_provider_retry_ex,
@@ -12,7 +11,7 @@ use crate::acp_client::{
 use crate::journal_throttle::is_paragraph_break;
 use crate::permission::{
     coerce_wire_option_id_for_tool, extract_path_target, extract_shell_command, may_auto_allow,
-    may_auto_deny, resolve_reject_option_id, scope_key,
+    may_auto_deny, permission_preview_text, resolve_reject_option_id, scope_key,
 };
 use crate::session_fsm::SessionState;
 use crate::store::{self, ChatMessageStored};
@@ -207,7 +206,7 @@ impl SessionManager {
                 options,
                 raw,
             } => {
-                let preview = raw.to_string();
+                let preview = permission_preview_text(&raw, &title);
                 let path_target = extract_path_target(&raw);
                 let shell_command = extract_shell_command(&raw);
                 let sk_source = if path_target.is_empty() {
@@ -844,9 +843,7 @@ impl SessionManager {
                     let mut bg = self.background.lock();
                     if let Some(s) = bg.get_mut(app_session_id) {
                         s.provider_retry_attempt = attempt;
-                        if !Self::should_apply_provider_retry_abort(s) {
-                            false
-                        } else if s.provider_retry_aborted {
+                        if !Self::should_apply_provider_retry_abort(s) || s.provider_retry_aborted {
                             false
                         } else {
                             should_abort_provider_retry_ex(attempt, max_retries, &status, &reason)

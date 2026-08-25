@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createT } from "@/i18n";
+import { beforeAll, describe, expect, it } from "vitest";
+import { createT, loadAllLocaleCatalogs } from "@/i18n";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_NAV,
@@ -15,8 +15,22 @@ import {
 } from "./settingsCatalog";
 
 describe("settingsCatalog", () => {
+  beforeAll(async () => {
+    await loadAllLocaleCatalogs();
+  });
+
   it("has no structural invariants broken", () => {
     expect(catalogInvariants()).toEqual([]);
+  });
+
+  it("registers three distinct static skin-share anchors", () => {
+    const presets = SETTINGS_ENTRIES.find((e) => e.id === "appearance.skinPresets");
+    const catalog = SETTINGS_ENTRIES.find((e) => e.id === "appearance.skinCatalog");
+    const sources = SETTINGS_ENTRIES.find((e) => e.id === "appearance.skinSources");
+    expect(presets?.anchorId).toBe("settings-anchor-skin-presets");
+    expect(catalog?.anchorId).toBe("settings-anchor-skin-catalog");
+    expect(sources?.anchorId).toBe("settings-anchor-skin-sources");
+    expect(new Set([presets?.anchorId, catalog?.anchorId, sources?.anchorId]).size).toBe(3);
   });
 
   it("lists each section exactly once in NAV", () => {
@@ -443,6 +457,14 @@ describe("settingsCatalog", () => {
     const sessionApiZh = searchSettingsEntries("会话列表", tZh, tEn);
     expect(
       sessionApiZh.some((h) => h.entry.id === "runtime.sessionApi"),
+    ).toBe(true);
+    const importListed = searchSettingsEntries("import listed", tZh, tEn);
+    expect(
+      importListed.some((h) => h.entry.id === "account.callLogs"),
+    ).toBe(true);
+    const importZh = searchSettingsEntries("导入会话", tZh, tEn);
+    expect(
+      importZh.some((h) => h.entry.id === "account.callLogs"),
     ).toBe(true);
   });
 });

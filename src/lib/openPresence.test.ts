@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   OPEN_PRESENCE_MS,
-  VIEW_PRESENCE_MS,
   reduceOpenPresence,
   type OpenPresenceState,
 } from "./openPresence";
@@ -62,7 +61,7 @@ describe("floating pop CSS", () => {
     "utf8",
   );
   const env = readFileSync(
-    resolve(__dirname, "../styles/side-workbench.css"),
+    resolve(__dirname, "../styles/side-workbench.part2.css"),
     "utf8",
   );
   const settings = readFileSync(
@@ -73,8 +72,28 @@ describe("floating pop CSS", () => {
     resolve(__dirname, "../styles/sidebar.part1.css"),
     "utf8",
   );
+  const skins = readFileSync(
+    resolve(__dirname, "../styles/skins.css"),
+    "utf8",
+  );
   const tree = readFileSync(
     resolve(__dirname, "../styles/sidebar.part2.css"),
+    "utf8",
+  );
+  const appWorkbench = readFileSync(
+    resolve(__dirname, "../app/AppWorkbench.tsx"),
+    "utf8",
+  );
+  const settingsNav = readFileSync(
+    resolve(__dirname, "../hooks/useSettingsNavigation.ts"),
+    "utf8",
+  );
+  const settingsStage = readFileSync(
+    resolve(__dirname, "../app/WorkbenchSettingsStage.tsx"),
+    "utf8",
+  );
+  const userMenu = readFileSync(
+    resolve(__dirname, "../components/UserMenu.tsx"),
     "utf8",
   );
 
@@ -89,12 +108,93 @@ describe("floating pop CSS", () => {
     expect(env).toMatch(/var\(--motion-normal\) var\(--motion-pane-ease\)/);
   });
 
-  it("crossfades settings over a still-mounted workbench", () => {
-    expect(VIEW_PRESENCE_MS).toBe(320);
-    expect(settings).toMatch(/\.app-settings-stage\.is-open/);
-    expect(settings).toMatch(/transform-origin:\s*bottom left/);
-    expect(settings).toMatch(/var\(--motion-pane\) var\(--motion-pane-ease\)/);
-    expect(workbenchCss).toMatch(/\.workbench\.is-view-idle/);
+  it("switches settings atomically without a presence or paint gap", () => {
+    const start = settings.indexOf(".app-settings-stage {");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const stageCss = settings.slice(
+      start,
+      settings.indexOf("/* ===== Settings full page"),
+    );
+    expect(stageCss).not.toMatch(/visibility\s*:/);
+    expect(stageCss).not.toMatch(/opacity\s*:/);
+    expect(stageCss).not.toMatch(/transform\s*:/);
+    expect(stageCss).not.toMatch(/(?:transition|animation)\s*:/);
+    expect(stageCss).toMatch(/z-index:\s*20/);
+    expect(appWorkbench).toMatch(/\{settingsOpen \? \(/);
+    expect(appWorkbench).not.toMatch(/settingsPresence|VIEW_PRESENCE_MS/);
+    expect(settings).not.toMatch(/settings-stage-(?:enter|leave)/);
+  });
+
+  it("uses the same CSS frost on workbench sidebar and settings nav", () => {
+    const blur =
+      /backdrop-filter:\s*blur\(var\(--sidebar-blur\)\)\s*saturate\(var\(--sidebar-saturate\)\)/;
+    expect(workbenchCss).toMatch(
+      /\.platform-mac \.sidebar\s*\{[^}]*backdrop-filter:\s*blur\(var\(--sidebar-blur\)\)/,
+    );
+    expect(workbenchCss).toMatch(
+      /\.platform-mac \.settings-page__nav\s*\{[^}]*backdrop-filter:\s*blur\(var\(--sidebar-blur\)\)/,
+    );
+    expect(workbenchCss).toMatch(blur);
+  });
+
+  it("keeps the workbench fully painted behind the direct settings swap", () => {
+    expect(appWorkbench).not.toMatch(/is-view-idle/);
+    expect(workbenchCss).not.toMatch(/\.workbench\.is-view-idle/);
+    expect(workbenchCss).toMatch(/\.workbench\s*\{[^}]*z-index:\s*0/);
+    expect(skins).toMatch(
+      /html\[data-wallpaper="1"\] \.app-settings-stage\s*\{[^}]*z-index:\s*20/,
+    );
+    // #846: lift only .workbench so the settings stage keeps inset:0.
+    expect(skins).toMatch(
+      /html\[data-wallpaper="1"\] \.app-shell > \.workbench\s*\{[^}]*position:\s*relative/s,
+    );
+    expect(skins).not.toMatch(
+      /html\[data-wallpaper="1"\] \.app-shell\s*>\s*\*:not\(/s,
+    );
+  });
+
+  it("closes the account portal immediately when settings takes over", () => {
+    expect(appWorkbench).toMatch(/closeImmediately=\{settingsOpen\}/);
+    expect(userMenu).toMatch(
+      /useOpenPresence\(\s*open,\s*true,\s*closeImmediately \? 0 : OPEN_PRESENCE_MS,\s*\)/,
+    );
+    expect(userMenu).toMatch(
+      /const panel\s*=\s*!closeImmediately\s*&&\s*panelPresence\.mounted/,
+    );
+    expect(settingsNav).toMatch(
+      /if \(route\.kind === "settings-explicit"\) \{\s*ensureSettingsNativeCover\(\);\s*optsRef\.current\.onMenuClose\(\);/,
+    );
+  });
+
+  it("covers native child webviews before committing settings", () => {
+    const navigateStart = settingsNav.indexOf("const navigateSettings = useCallback(");
+    const navigateEnd = settingsNav.indexOf("const closeSettings = useCallback(", navigateStart);
+    const navigate = settingsNav.slice(navigateStart, navigateEnd);
+    expect(navigate.indexOf("ensureSettingsNativeCover();")).toBeGreaterThan(0);
+    expect(navigate.indexOf("ensureSettingsNativeCover();")).toBeLessThan(
+      navigate.indexOf("setSettingsOpen(true)"),
+    );
+    expect(settingsNav).toMatch(
+      /useLayoutEffect\(\(\) => \{\s*if \(settingsOpen\)/,
+    );
+  });
+
+  it("loads settings before the first navigation can hard-cut in", () => {
+    expect(settingsStage).toMatch(
+      /import\s*\{\s*SettingsPage(?:\s*,\s*type SettingsSectionId)?\s*\}\s*from "@\/components\/SettingsPage"/,
+    );
+    expect(appWorkbench).not.toMatch(
+      /(?:lazy|import)\([^\n]*@\/components\/SettingsPage/,
+    );
+    expect(settingsStage).not.toMatch(
+      /(?:lazy|import)\([^\n]*@\/components\/SettingsPage/,
+    );
+  });
+
+  it("settings nav width follows the workbench rail token", () => {
+    expect(settings).toMatch(
+      /\.settings-page__nav\s*\{[^}]*width:\s*var\(--sidebar-rail-width/,
+    );
   });
 
   it("interpolates project session lists instead of hard-cutting", () => {

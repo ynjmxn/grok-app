@@ -16,16 +16,13 @@
 //! material is loaded lazily when a caller needs the value.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 
 use crate::paths::{ensure_app_dirs, secrets_file};
 use crate::store::SecretsFile;
-
-#[cfg(test)]
-use std::collections::HashMap;
 
 /// Reverse-DNS service id shared with app data layout (`com.grokapp.grok-app`).
 const KEYRING_SERVICE: &str = "com.grokapp.grok-app";
@@ -310,14 +307,14 @@ pub fn merge_secrets(disk: SecretsFile, from_keychain: SecretsFile) -> SecretsFi
     }
 }
 
-fn read_disk_secrets(path: &PathBuf) -> SecretsFile {
+fn read_disk_secrets(path: &Path) -> SecretsFile {
     match fs::read_to_string(path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => SecretsFile::default(),
     }
 }
 
-fn write_disk_secrets(path: &PathBuf, value: &SecretsFile) -> Result<(), String> {
+fn write_disk_secrets(path: &Path, value: &SecretsFile) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

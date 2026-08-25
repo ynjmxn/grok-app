@@ -1,16 +1,15 @@
-/** @vitest-environment jsdom */
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
-  applyViewportPan,
+  CAPTION_BUTTON_TOGGLE_DEFER_MS,
   maximizeLooksNoop,
   osMaximizeWaitMs,
+  scheduleCaptionButtonToggle,
   shouldAcceptTitlebarMaximize,
   shouldFakeMaximizeFallback,
+  tauriDragRegion,
   TITLEBAR_MAXIMIZE_DEBOUNCE_MS,
-  viewportPanFromOffset,
-  VIEWPORT_PAN_CLASS,
-  VIEWPORT_PAN_X_VAR,
-  VIEWPORT_PAN_Y_VAR,
 } from "./windowChrome";
 
 describe("shouldAcceptTitlebarMaximize", () => {
@@ -32,6 +31,50 @@ describe("maximizeLooksNoop", () => {
   });
 });
 
+describe("tauriDragRegion", () => {
+  it("disables JS start_dragging on Windows (CSS compositor caption stays)", () => {
+    expect(tauriDragRegion("win")).toBe("false");
+    expect(tauriDragRegion("mac")).toBe("deep");
+    expect(tauriDragRegion("linux")).toBe("deep");
+  });
+
+  it("keeps compositor caption drag on Windows false-regions", () => {
+    const sidebar = readFileSync(
+      join(__dirname, "../styles/sidebar.part1.css"),
+      "utf8",
+    );
+    const settings = readFileSync(
+      join(__dirname, "../styles/settings.part1.css"),
+      "utf8",
+    );
+    expect(sidebar).toMatch(
+      /\[data-tauri-drag-region\][^{]*\{[^}]*-webkit-app-region:\s*drag/,
+    );
+    expect(sidebar).not.toMatch(
+      /\[data-tauri-drag-region="false"\][^{]*\{[^}]*no-drag/,
+    );
+    expect(sidebar).not.toMatch(
+      /html\.platform-win \[data-tauri-drag-region\][\s\S]{0,80}no-drag/,
+    );
+    expect(settings).not.toMatch(
+      /html\.platform-win \.settings-page__chrome[\s\S]{0,120}no-drag/,
+    );
+  });
+
+  it("keeps portaled GlassModal overlays off the window-drag region (#844)", () => {
+    const chrome = readFileSync(
+      join(__dirname, "../styles/chat.part4.css"),
+      "utf8",
+    );
+    expect(chrome).toMatch(
+      /\.overlay\s*\{[^}]*-webkit-app-region:\s*no-drag/s,
+    );
+    expect(chrome).toMatch(
+      /\.modal\s*\{[^}]*-webkit-app-region:\s*no-drag/s,
+    );
+  });
+});
+
 describe("shouldFakeMaximizeFallback", () => {
   it("is Linux-only — Windows/mac must use OS maximize, not setSize fill", () => {
     expect(shouldFakeMaximizeFallback("linux")).toBe(true);
@@ -42,35 +85,23 @@ describe("shouldFakeMaximizeFallback", () => {
 });
 
 describe("osMaximizeWaitMs", () => {
-  it("waits longer when there is no work-area fill fallback", () => {
-    expect(osMaximizeWaitMs(true)).toBeLessThan(osMaximizeWaitMs(false));
+  it("only waits on the Linux work-area fill path", () => {
     expect(osMaximizeWaitMs(true)).toBe(40);
-    expect(osMaximizeWaitMs(false)).toBe(280);
+    expect(osMaximizeWaitMs(false)).toBe(0);
   });
 });
 
-describe("viewportPanFromOffset", () => {
-  it("returns null when the visual viewport is not panned", () => {
-    expect(viewportPanFromOffset(0, 0)).toBeNull();
-    expect(viewportPanFromOffset(0.2, -0.2)).toBeNull();
-  });
-
-  it("negates top/left offset so chrome stays pinned in the frame", () => {
-    expect(viewportPanFromOffset(0, 48)).toEqual({ x: 0, y: -48 });
-    expect(viewportPanFromOffset(12.6, 20.4)).toEqual({ x: -13, y: -20 });
-  });
-});
-
-describe("applyViewportPan", () => {
-  it("sets CSS vars while panned and clears them at identity", () => {
-    const root = document.createElement("html");
-    applyViewportPan(root, { x: 0, y: -48 });
-    expect(root.classList.contains(VIEWPORT_PAN_CLASS)).toBe(true);
-    expect(root.style.getPropertyValue(VIEWPORT_PAN_X_VAR)).toBe("0px");
-    expect(root.style.getPropertyValue(VIEWPORT_PAN_Y_VAR)).toBe("-48px");
-    applyViewportPan(root, null);
-    expect(root.classList.contains(VIEWPORT_PAN_CLASS)).toBe(false);
-    expect(root.style.getPropertyValue(VIEWPORT_PAN_X_VAR)).toBe("");
-    expect(root.style.getPropertyValue(VIEWPORT_PAN_Y_VAR)).toBe("");
+describe("scheduleCaptionButtonToggle", () => {
+  it("defers past mouse-up so Windows does not drag-to-restore", () => {
+    expect(CAPTION_BUTTON_TOGGLE_DEFER_MS).toBeGreaterThan(0);
+    vi.useFakeTimers();
+    const fn = vi.fn();
+    scheduleCaptionButtonToggle(fn, CAPTION_BUTTON_TOGGLE_DEFER_MS);
+    expect(fn).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(CAPTION_BUTTON_TOGGLE_DEFER_MS - 1);
+    expect(fn).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(fn).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });

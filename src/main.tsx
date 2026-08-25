@@ -1,15 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
-import { PetApp } from "./components/pet/PetApp";
 import { isPetShellHash } from "@/lib/pet/petShell";
 import { UpdaterProvider } from "./hooks/UpdaterProvider";
 import "./styles/tokens.css";
 import "./styles/skins.css";
 import "./styles/tailwind.css";
-import "streamdown/styles.css";
 import "./styles/app.css";
 import "./styles/setup-wizard.css";
+import "@/lib/scrollPerfDebug";
 import { detectAppPlatform } from "./lib/appPlatform";
 import {
   applyNativeWindowTheme,
@@ -231,14 +229,23 @@ document.addEventListener(
   true,
 );
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    {petShell ? (
-      <PetApp />
-    ) : (
-      <UpdaterProvider>
-        <App />
-      </UpdaterProvider>
-    )}
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+if (petShell) {
+  void import("./components/pet/PetApp").then(({ PetApp }) => {
+    root.render(
+      <StrictMode>
+        <PetApp />
+      </StrictMode>,
+    );
+  });
+} else {
+  void import("./App").then(({ default: App }) => {
+    root.render(
+      <StrictMode>
+        <UpdaterProvider>
+          <App />
+        </UpdaterProvider>
+      </StrictMode>,
+    );
+  });
+}

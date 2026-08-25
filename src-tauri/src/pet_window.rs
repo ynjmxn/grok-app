@@ -9,6 +9,7 @@
 //! the key window. WKWebView then eats the first click on the workbench just
 //! to focus it. `focusable(false)` maps to `canBecomeKeyWindow = NO` /
 //! `WS_EX_NOACTIVATE` so the pet stays above other apps without stealing key.
+//! A press on the mark is for drag / emote; only a double-click shows main.
 //!
 //! Linux/KWin drops pointer events on `accept_focus=false` windows, so the
 //! overlay stays focusable there and does not yield key on the same click.
@@ -27,6 +28,22 @@ use tauri::{
 
 pub const PET_WINDOW_LABEL: &str = "pet";
 const PREFS_FILE: &str = "pet-prefs.json";
+
+/// Cursor/hit poll while the overlay is on screen or being dragged.
+pub const PET_CURSOR_WATCH_ACTIVE_MS: u64 = 64;
+/// Hidden / disabled overlay — do not wake every frame.
+pub const PET_CURSOR_WATCH_IDLE_MS: u64 = 500;
+
+/// Sleep between pet cursor-watch ticks.
+pub fn pet_cursor_watch_sleep_ms(want_show: bool, visible: bool, dragging: bool) -> u64 {
+    if dragging {
+        return PET_CURSOR_WATCH_ACTIVE_MS;
+    }
+    if !want_show || !visible {
+        return PET_CURSOR_WATCH_IDLE_MS;
+    }
+    PET_CURSOR_WATCH_ACTIVE_MS
+}
 
 static DRAGGING: AtomicBool = AtomicBool::new(false);
 static MENU_OPEN: AtomicBool = AtomicBool::new(false);
@@ -193,7 +210,7 @@ pub struct PetTaskPayload {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PetHitChrome {
+pub(crate) struct PetHitChrome {
     valid: bool,
     mark_cx: f64,
     mark_cy: f64,
@@ -202,7 +219,9 @@ struct PetHitChrome {
     bubble_y: f64,
     bubble_w: f64,
     bubble_h: f64,
+    #[allow(dead_code)]
     window_w: f64,
+    #[allow(dead_code)]
     window_h: f64,
 }
 
@@ -454,9 +473,14 @@ pub fn pet_overlay_focusable(linux: bool) -> bool {
     linux
 }
 
-/// Immediate Focused(true) → yield cancels the click / move serial on Linux.
-pub fn should_yield_key_on_pet_focus(linux: bool, dragging: bool, menu_open: bool) -> bool {
-    !linux && !dragging && !menu_open
+/// Clicking or dragging the overlay must not raise the workbench.
+///
+/// Linux: a same-tick yield also eats the click / move serial.
+/// macOS/Windows: yielding `set_focus` on main is what made a pet press
+/// wake the main window. Key is returned after pet `show()` via
+/// `should_force_return_main_key_after_show`.
+pub fn should_yield_key_on_pet_focus(_linux: bool, _dragging: bool, _menu_open: bool) -> bool {
+    false
 }
 
 pub fn pet_nudge_origin(x: f64, y: f64, dx: f64, dy: f64) -> (f64, f64) {
@@ -654,6 +678,7 @@ pub fn persist_pet_window_pos(app: &AppHandle) {
 }
 
 /// Physical cursor vs logical hit chrome (mark disc + task-bubble stack).
+#[allow(clippy::too_many_arguments)]
 pub fn pet_cursor_over_chrome(
     cursor_x: f64,
     cursor_y: f64,
@@ -689,6 +714,7 @@ pub fn pet_hit_radius(size_px: u32, scale_factor: f64) -> f64 {
     f64::from(size_px.max(64)) * scale_factor.max(0.5) * 0.52
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn pet_cursor_over_mark(
     cursor_x: f64,
     cursor_y: f64,
@@ -712,9 +738,40 @@ fn apply_window_chrome(win: &tauri::WebviewWindow) {
     let _ = win.set_decorations(false);
     let _ = win.set_shadow(false);
     let _ = win.set_focusable(pet_overlay_focusable(cfg!(target_os = "linux")));
+    apply_pet_prevents_activation(win);
     detach_native_menu(win);
     if pet_wayland_display() {
         let _ = win.set_ignore_cursor_events(false);
+    }
+}
+
+/// Clicking the overlay must not activate Grok (macOS would otherwise raise
+/// every window of the app, including the hidden/background workbench).
+fn apply_pet_prevents_activation(#[allow(unused_variables)] win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(ptr) = win.ns_window() else {
+            return;
+        };
+        if ptr.is_null() {
+            return;
+        }
+        unsafe {
+            use objc2::runtime::{AnyObject, Bool};
+            use objc2::{msg_send, sel};
+            let window = ptr as *mut AnyObject;
+            let public = sel!(setPreventsActivation:);
+            let responds: Bool = msg_send![window, respondsToSelector: public];
+            if responds.as_bool() {
+                let _: () = msg_send![window, setPreventsActivation: true];
+                return;
+            }
+            let private = sel!(_setPreventsActivation:);
+            let responds: Bool = msg_send![window, respondsToSelector: private];
+            if responds.as_bool() {
+                let _: () = msg_send![window, _setPreventsActivation: true];
+            }
+        }
     }
 }
 
@@ -824,6 +881,19 @@ pub fn should_force_return_main_key_after_show(
 /// Skip redundant `set_ignore_cursor_events` — repeating it every poll tick
 /// remaps mouse routing in the workbench and arms session drag on a click.
 pub fn pet_ignore_cursor_should_apply(prev: Option<bool>, next: bool) -> bool {
+    prev != Some(next)
+}
+
+/// Quantize screen-space look so a still cursor does not wake the overlay.
+pub fn pet_cursor_quant(dx: f64, dy: f64, local_r: f64) -> (i32, i32, i32) {
+    (
+        (dx * 0.5).round() as i32,
+        (dy * 0.5).round() as i32,
+        local_r.round() as i32,
+    )
+}
+
+pub fn pet_cursor_should_emit(prev: Option<(i32, i32, i32)>, next: (i32, i32, i32)) -> bool {
     prev != Some(next)
 }
 
@@ -944,10 +1014,8 @@ pub fn ensure_pet_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String
             }
             tauri::WindowEvent::Focused(true) => {
                 // show() uses makeKeyAndOrderFront even when focused(false).
-                // If the workbench is already up, give key back immediately.
-                // Skip while dragging / menu is open so pointer capture stays.
-                // On Linux a same-tick yield eats the click (KWin) and the
-                // xdg_toplevel.move serial — show_pet already yields.
+                // Do not yield on a user press — that raised the workbench
+                // when the user only meant to drag. show_pet already yields.
                 if should_yield_key_on_pet_focus(
                     cfg!(target_os = "linux"),
                     DRAGGING.load(Ordering::Relaxed),
@@ -1048,8 +1116,21 @@ pub fn start_cursor_watch(app: AppHandle) {
     }
     tauri::async_runtime::spawn(async move {
         let wayland = pet_wayland_display();
+        let mut last_cursor: Option<(i32, i32, i32)> = None;
         loop {
-            tokio::time::sleep(Duration::from_millis(64)).await;
+            let want = WANT_SHOW.load(Ordering::SeqCst);
+            let dragging = DRAGGING.load(Ordering::Relaxed);
+            let visible = app
+                .get_webview_window(PET_WINDOW_LABEL)
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            tokio::time::sleep(Duration::from_millis(pet_cursor_watch_sleep_ms(
+                want, visible, dragging,
+            )))
+            .await;
+            if !want && !dragging {
+                continue;
+            }
             let Some(win) = app.get_webview_window(PET_WINDOW_LABEL) else {
                 continue;
             };
@@ -1079,6 +1160,8 @@ pub fn start_cursor_watch(app: AppHandle) {
             }
             let visible = win.is_visible().unwrap_or(false);
             if !visible {
+                // Stale quant would swallow the first look event on re-show.
+                last_cursor = None;
                 continue;
             }
             let Ok(cursor) = app.cursor_position() else {
@@ -1134,14 +1217,25 @@ pub fn start_cursor_watch(app: AppHandle) {
                 fallback_cy
             };
             let local_r = pet_hit_radius(size_px, scale);
-            let _ = app.emit(
-                "pet://cursor",
-                serde_json::json!({
-                    "dx": cursor.x - mark_cx,
-                    "dy": cursor.y - mark_cy,
-                    "localR": local_r,
-                }),
-            );
+            let dx = cursor.x - mark_cx;
+            let dy = cursor.y - mark_cy;
+            let quant = pet_cursor_quant(dx, dy, local_r);
+            if pet_cursor_should_emit(last_cursor, quant) {
+                last_cursor = Some(quant);
+                // Overlay-only: targeted emit so the workbench webview is never
+                // woken by cursor polling (plain JS listen() still receives it).
+                let _ = app.emit_to(
+                    tauri::EventTarget::WebviewWindow {
+                        label: PET_WINDOW_LABEL.into(),
+                    },
+                    "pet://cursor",
+                    serde_json::json!({
+                        "dx": dx,
+                        "dy": dy,
+                        "localR": local_r,
+                    }),
+                );
+            }
         }
     });
 }
@@ -1367,6 +1461,30 @@ pub fn pet_set_hit_chrome(chrome: PetHitChromeIn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_watch_sleeps_longer_when_hidden() {
+        assert_eq!(
+            pet_cursor_watch_sleep_ms(true, true, false),
+            PET_CURSOR_WATCH_ACTIVE_MS
+        );
+        assert_eq!(
+            pet_cursor_watch_sleep_ms(true, true, true),
+            PET_CURSOR_WATCH_ACTIVE_MS
+        );
+        assert_eq!(
+            pet_cursor_watch_sleep_ms(false, false, false),
+            PET_CURSOR_WATCH_IDLE_MS
+        );
+        assert_eq!(
+            pet_cursor_watch_sleep_ms(true, false, false),
+            PET_CURSOR_WATCH_IDLE_MS
+        );
+        assert_eq!(
+            pet_cursor_watch_sleep_ms(false, false, true),
+            PET_CURSOR_WATCH_ACTIVE_MS
+        );
+    }
 
     #[test]
     fn pet_init_script_hides_boot_gate() {
@@ -1647,9 +1765,11 @@ mod tests {
     }
 
     #[test]
-    fn linux_focus_does_not_yield_key_on_the_same_click() {
+    fn pet_pointer_down_does_not_yield_key_to_main() {
+        // Click / drag the overlay to move it — never raise the workbench.
+        // Key is returned after pet show() via should_force_return_main_key_after_show.
         assert!(!should_yield_key_on_pet_focus(true, false, false));
-        assert!(should_yield_key_on_pet_focus(false, false, false));
+        assert!(!should_yield_key_on_pet_focus(false, false, false));
         assert!(!should_yield_key_on_pet_focus(false, true, false));
         assert!(!should_yield_key_on_pet_focus(false, false, true));
     }
@@ -1674,6 +1794,16 @@ mod tests {
         assert_eq!(pet_poll_ignore_cursor(true, true), None);
         assert_eq!(pet_poll_ignore_cursor(false, false), Some(true));
         assert_eq!(pet_poll_ignore_cursor(false, true), Some(false));
+    }
+
+    #[test]
+    fn still_cursor_does_not_re_emit_look_events() {
+        let a = pet_cursor_quant(10.4, -3.1, 64.2);
+        let b = pet_cursor_quant(10.1, -3.4, 64.4);
+        let c = pet_cursor_quant(40.0, -3.1, 64.2);
+        assert!(!pet_cursor_should_emit(Some(a), b));
+        assert!(pet_cursor_should_emit(Some(a), c));
+        assert!(pet_cursor_should_emit(None, a));
     }
 
     #[test]

@@ -26,25 +26,59 @@ export function usePaneSplitMotion(opts: {
   sidebarCollapsed: boolean;
   asideCollapsed: boolean;
   phoneLayout?: boolean;
+  /** Left pane is an overlay drawer — its transform already owns the motion. */
+  sidebarOverlay?: boolean;
+  /** Right pane is an overlay drawer — cover native webviews during transform. */
+  asideOverlay?: boolean;
+  /** Right pane participates in the workbench width split. */
+  asideInFlow: boolean;
 }): { paneMotionClass: string } {
   const [, setEpoch] = useState(0);
   const keyRef = useRef<string | null>(null);
+  const asideOverlayRef = useRef(Boolean(opts.asideOverlay));
+  const asideInFlowRef = useRef(opts.asideInFlow);
   const tokenRef = useRef(0);
   const releaseRef = useRef<(() => void) | null>(null);
   const timerRef = useRef<number | null>(null);
 
   const key = `${opts.sidebarCollapsed}:${opts.asideCollapsed}`;
+  const asideOverlay = Boolean(opts.asideOverlay);
+  const asideOverlayModeChanged = asideOverlayRef.current !== asideOverlay;
+  const asideOverlayMotionChanged =
+    asideOverlayModeChanged && (asideOverlay || opts.asideInFlow);
+  const enteredSideExpanded =
+    !asideOverlay &&
+    !opts.asideInFlow &&
+    (asideOverlayRef.current || asideInFlowRef.current);
+  if (
+    enteredSideExpanded &&
+    tokenRef.current &&
+    (isPaneSplitAsideMotionActive() || isPaneSplitCoverActive())
+  ) {
+    endPaneSplitMotion(tokenRef.current);
+    tokenRef.current = 0;
+  }
   if (keyRef.current === null) {
     keyRef.current = key;
-  } else if (keyRef.current !== key) {
+  } else if (keyRef.current !== key || asideOverlayMotionChanged) {
     const colon = keyRef.current.indexOf(":");
     const sidebarChanged =
       keyRef.current.slice(0, colon) !== String(opts.sidebarCollapsed);
     const asideChanged =
       keyRef.current.slice(colon + 1) !== String(opts.asideCollapsed);
+    const sidebarWidthChanged = sidebarChanged && !opts.sidebarOverlay;
+    const asideWidthChanged =
+      asideChanged && opts.asideInFlow && asideInFlowRef.current;
+    const asideOverlayChanged =
+      asideChanged &&
+      (asideOverlay || opts.asideInFlow) &&
+      (asideOverlayRef.current || asideOverlay);
+    const coverChanged =
+      asideWidthChanged || asideOverlayChanged || asideOverlayMotionChanged;
     keyRef.current = key;
     if (
       !opts.phoneLayout &&
+      (sidebarWidthChanged || coverChanged) &&
       shouldStartPaneSplitMotion({
         reducedMotion: false,
         isFirstCommit: false,
@@ -53,17 +87,30 @@ export function usePaneSplitMotion(opts: {
     ) {
       if (tokenRef.current) endPaneSplitMotion(tokenRef.current);
       tokenRef.current = beginPaneSplitMotion({
-        cover: asideChanged,
-        width: true,
-        sidebar: sidebarChanged,
-        aside: asideChanged,
+        cover: coverChanged,
+        width: sidebarWidthChanged || asideWidthChanged,
+        sidebar: sidebarWidthChanged,
+        aside: asideWidthChanged,
       });
     }
   }
+  asideOverlayRef.current = asideOverlay;
+  asideInFlowRef.current = opts.asideInFlow;
 
   useLayoutEffect(() => {
     const token = tokenRef.current;
-    if (!token) return;
+    if (!token) {
+      if (releaseRef.current && !isPaneSplitCoverActive()) {
+        releaseRef.current();
+        releaseRef.current = null;
+      }
+      return;
+    }
+    const finishOnSidebarWidth = isPaneSplitSidebarMotionActive();
+    const finishOnAsideWidth = isPaneSplitAsideMotionActive();
+    const pendingWidthPanes = new Set<"sidebar" | "aside">();
+    if (finishOnSidebarWidth) pendingWidthPanes.add("sidebar");
+    if (finishOnAsideWidth) pendingWidthPanes.add("aside");
 
     if (isPaneSplitCoverActive() && !releaseRef.current) {
       releaseRef.current = acquireNativeWebviewCover();
@@ -91,9 +138,13 @@ export function usePaneSplitMotion(opts: {
       const t = e.target;
       if (!(t instanceof HTMLElement)) return;
       if (e.propertyName !== "width") return;
-      if (!t.classList.contains("sidebar") && !t.classList.contains("aside")) {
-        return;
-      }
+      const pane = t.classList.contains("sidebar")
+        ? "sidebar"
+        : t.classList.contains("aside")
+          ? "aside"
+          : null;
+      if (!pane || !pendingWidthPanes.delete(pane)) return;
+      if (pendingWidthPanes.size) return;
       finish();
     };
     document.addEventListener("transitionend", onEnd);
@@ -106,7 +157,14 @@ export function usePaneSplitMotion(opts: {
       document.removeEventListener("transitionend", onEnd);
       unsubBump();
     };
-  }, [opts.sidebarCollapsed, opts.asideCollapsed, opts.phoneLayout]);
+  }, [
+    opts.sidebarCollapsed,
+    opts.asideCollapsed,
+    opts.phoneLayout,
+    opts.sidebarOverlay,
+    opts.asideOverlay,
+    opts.asideInFlow,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -124,55 +182,4 @@ export function usePaneSplitMotion(opts: {
   }
   if (isPaneSplitAsideMotionActive()) classes.push(PANE_SPLIT_ASIDE_MOTION_CLASS);
   return { paneMotionClass: classes.length ? ` ${classes.join(" ")}` : "" };
-}
-
-/** Height-only motion for the bottom terminal — no workbench class / cover. */
-export function usePaneHeightMotion(
-  open: boolean,
-  panelRef: { readonly current: HTMLElement | null },
-): void {
-  const prevRef = useRef<boolean | null>(null);
-  const tokenRef = useRef(0);
-  const timerRef = useRef<number | null>(null);
-
-  if (prevRef.current === null) {
-    prevRef.current = open;
-  } else if (prevRef.current !== open) {
-    prevRef.current = open;
-    if (tokenRef.current) endPaneSplitMotion(tokenRef.current);
-    tokenRef.current = beginPaneSplitMotion({ width: false, cover: false });
-  }
-
-  useLayoutEffect(() => {
-    const token = tokenRef.current;
-    if (!token) return;
-    const el = panelRef.current;
-    const finish = () => {
-      if (tokenRef.current !== token) return;
-      endPaneSplitMotion(token);
-      tokenRef.current = 0;
-    };
-    if (timerRef.current != null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(finish, PANE_SPLIT_MOTION_TIMEOUT_MS);
-    const onEnd = (e: TransitionEvent) => {
-      if (e.target !== el) return;
-      if (e.propertyName !== "height") return;
-      finish();
-    };
-    el?.addEventListener("transitionend", onEnd);
-    return () => {
-      el?.removeEventListener("transitionend", onEnd);
-      if (timerRef.current != null) {
-        window.clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [open, panelRef]);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current != null) window.clearTimeout(timerRef.current);
-      if (tokenRef.current) endPaneSplitMotion(tokenRef.current);
-    };
-  }, []);
 }

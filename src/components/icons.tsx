@@ -29,6 +29,7 @@ import {
   IconBrush as TbBrush,
   IconCalendarTime as TbCalendarTime,
   IconCheck as TbCheck,
+  IconClearAll as TbClearAll,
   IconClipboardList as TbClipboardList,
   IconClock as TbClock,
   IconCode as TbCode,
@@ -103,6 +104,7 @@ import {
   IconStack2 as TbStack2,
   IconStrikethrough as TbStrikethrough,
   IconSun as TbSun,
+  IconSwitchHorizontal as TbSwitchHorizontal,
   IconTarget as TbTarget,
   IconTerminal2 as TbTerminal2,
   IconThumbDown as TbThumbDown,
@@ -256,6 +258,8 @@ export const IconSkills = wrap(TbTool);
 /** Lifecycle hooks (PreToolUse / SessionStart, …). */
 export const IconHooks = wrap(TbBolt);
 export const IconChevronDown = wrap(TbChevronDown);
+/** Space / view switch — distinct from L1 expand chevrons. */
+export const IconSwitch = wrap(TbSwitchHorizontal);
 export const IconChevronLeft = wrap(TbChevronLeft);
 export const IconChevronRight = wrap(TbChevronRight);
 export const IconChevronUp = wrap(TbChevronUp);
@@ -270,6 +274,8 @@ export const IconTrash = wrap(TbTrash, { className: "g-icon--danger" });
 export const IconPaperclip = wrap(TbPaperclip);
 export const IconAttach = wrap(TbPaperclip);
 export const IconClose = wrap(TbX);
+/** Close / clear every item in a strip (bottom terminal close-all). */
+export const IconClearAll = wrap(TbClearAll);
 export const IconSend = wrap(TbSend);
 /** Up arrow — composer send button glyph. */
 export const IconArrowUp = wrap(TbArrowUp);

@@ -1,6 +1,6 @@
 [package]
 name = "grok-app"
-version = "0.2.24"
+version = "0.2.26"
 description = "Grok — desktop workbench for Grok Build CLI"
 authors = ["RongleCat"]
 edition = "2021"
@@ -22,6 +22,7 @@ tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "tra
 tauri-plugin-store = "2"
 # Second launch focuses existing window (Dock multi-open reports).
 tauri-plugin-single-instance = "2"
+tauri-plugin-deep-link = "2"
 # In-app auto-update. Hard dependency: Tauri ACL discovers updater:allow-* from
 # this crate at build time (capabilities/default.json). Runtime registration is
 # still gated by build.rs cfg(grok_updater_enabled) + non-debug — local dev
@@ -48,6 +49,7 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart", "system-proxy", "blocking", "socks"] }
 futures-util = "0.3"
 base64 = "0.22"
+sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
@@ -83,6 +85,9 @@ tauri-plugin-autostart = "2"
 portable-pty = "0.9.0"
 tauri-plugin-notification = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Windows system proxy (WinINET registry) for child-process env injection — NEW-02.
 # `windows` — shell integration (AUMID, Show Desktop / taskbar styles) in win_shell.rs.
 # `tauri-winrt-notification` — toast click (`on_activated`); the notification
@@ -92,6 +97,7 @@ clipboard-win = "5"
 winreg = "0.55"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Com",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
@@ -113,6 +119,8 @@ tauri-plugin-window-state = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"
 mac-usernotifications = "0.3"
+# Pet overlay: setPreventsActivation. Launch: NSApp.isActive / firstResponder.
+objc2 = "0.6"
 
 [profile.release]
 codegen-units = 1

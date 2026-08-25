@@ -24,7 +24,7 @@ pub fn user_home() -> PathBuf {
                 return PathBuf::from(h);
             }
         }
-        return PathBuf::from(".");
+        PathBuf::from(".")
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -96,7 +96,7 @@ pub fn ensure_home_env_std(cmd: &mut StdCommand) {
         return;
     }
     let home = user_home();
-    if home.as_os_str().is_empty() || home == PathBuf::from(".") {
+    if home.as_os_str().is_empty() || home == *"." {
         return;
     }
     cmd.env("HOME", home);
@@ -108,7 +108,7 @@ pub fn ensure_home_env_tokio(cmd: &mut tokio::process::Command) {
         return;
     }
     let home = user_home();
-    if home.as_os_str().is_empty() || home == PathBuf::from(".") {
+    if home.as_os_str().is_empty() || home == *"." {
         return;
     }
     cmd.env("HOME", home);
@@ -575,7 +575,7 @@ pub fn path_for_file_manager(path: &Path) -> String {
     let raw = pb.to_string_lossy();
     #[cfg(target_os = "windows")]
     {
-        return strip_extended_path_prefix(&raw).replace('/', "\\");
+        strip_extended_path_prefix(&raw).replace('/', "\\")
     }
     #[cfg(not(target_os = "windows"))]
     {

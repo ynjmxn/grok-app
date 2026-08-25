@@ -10,6 +10,10 @@ const CONF_PATH = resolve(TAURI_DIR, "tauri.conf.json");
 const MAC_PATH = resolve(TAURI_DIR, "tauri.macos.conf.json");
 const WIN_PATH = resolve(TAURI_DIR, "tauri.windows.conf.json");
 const LINUX_PATH = resolve(TAURI_DIR, "tauri.linux.conf.json");
+const SIDE_WORKBENCH_CSS_PATH = resolve(
+  __dirname,
+  "../styles/side-workbench.part1.css",
+);
 
 /**
  * Read a source file for text assertions, normalized to LF.
@@ -48,6 +52,13 @@ describe("window chrome", () => {
     expect(main.transparent).toBe(true);
     expect(main.decorations).toBe(true);
     expect(conf.app.macOSPrivateApi).toBe(true);
+  });
+
+  it("keeps expanded side-workbench tabs clear of mac traffic lights", () => {
+    const css = readSource(SIDE_WORKBENCH_CSS_PATH);
+    expect(css).toMatch(
+      /\.platform-mac\s+\.workbench--side-expanded:has\(\s*>\s*\.sidebar:is\(\.sidebar--hidden,\s*\.sidebar--overlay\)\s*\)\s+\.aside\s+\.sw-chrome\s*\{[^}]*padding-left:\s*var\(--titlebar-safe-left,\s*96px\)/s,
+    );
   });
 
   it("comfort min stays 900; Host caps OS min to half the work area", () => {
@@ -102,7 +113,7 @@ describe("window chrome", () => {
     expect(body).toMatch(/set_main_window_skip_taskbar/);
     const conf = JSON.parse(readFileSync(CONF_PATH, "utf8")) as { identifier?: string };
     expect(conf.identifier).toBe("com.grokapp.desktop");
-    expect(body).toContain("com.grokapp.desktop");
+    expect(body).toMatch(/pub fn set_process_app_user_model_id\(id: &str\)/);
   });
 
   it("user close keeps the macOS Dock icon", () => {

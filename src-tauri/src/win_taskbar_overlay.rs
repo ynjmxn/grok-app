@@ -6,6 +6,8 @@
 //! `DeleteTab` / `AddTab` can put it back. Driven by `tray_set_windows_overlay`,
 //! not `tray_set_busy_count`.
 
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const SIZE: u32 = 16;
@@ -169,7 +171,7 @@ mod tests {
         let px = overlay_rgba(8).expect("8");
         let mut fill = 0usize;
         let mut white = 0usize;
-        for chunk in px.chunks_exact(4) {
+        for chunk in px.as_chunks::<4>().0 {
             if chunk[3] < 200 {
                 continue;
             }

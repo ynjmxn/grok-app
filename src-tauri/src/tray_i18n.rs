@@ -174,6 +174,7 @@ pub fn is_c_or_posix_locale(raw: &str) -> bool {
 }
 
 /// First quoted token from `defaults read -g AppleLanguages` output.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn first_apple_languages_tag(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut i = 0;
@@ -197,6 +198,7 @@ pub fn first_apple_languages_tag(raw: &str) -> Option<String> {
 /// Map a Windows LANGID (GetUserDefaultUILanguage) to a BCP-47 tag.
 /// Unknown primary languages return `None` so callers can fall through to
 /// GetUserDefaultLocaleName (which covers locales without an entry here).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_langid_to_tag(id: u16) -> Option<&'static str> {
     const LANG_CHINESE: u16 = 0x04;
     const LANG_GERMAN: u16 = 0x07;
@@ -243,11 +245,11 @@ pub fn windows_langid_to_tag(id: u16) -> Option<&'static str> {
 fn platform_ui_lang_tag() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        return macos_ui_lang_tag();
+        macos_ui_lang_tag()
     }
     #[cfg(windows)]
     {
-        return windows_ui_lang_tag();
+        windows_ui_lang_tag()
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {

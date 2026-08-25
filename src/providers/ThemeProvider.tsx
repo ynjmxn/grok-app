@@ -12,6 +12,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { flushSync } from "react-dom";
 import { detectAppPlatform } from "@/lib/appPlatform";
 import {
   applyNativeWindowTheme,
@@ -22,6 +23,7 @@ import {
   nativeWindowThemeArg,
   parseThemePreference,
   readOsTheme,
+  runThemeTransition,
   saveThemePreference,
   subscribeHostOsTheme,
   subscribeSystemTheme,
@@ -78,7 +80,10 @@ export type ThemeShellValue = {
   setWallpaperScrim: (v: number) => void;
   applyThemeChoice: (next: ThemePreference) => void;
   applyThemeScheduleChoice: (next: ThemeScheduleConfig) => void;
-  applySkinChoice: (next: ThemeSkinId) => void;
+  applySkinChoice: (
+    next: ThemeSkinId,
+    opts?: { applyPreferredTheme?: boolean },
+  ) => void;
   applyWallpaperChoice: (
     record: WallpaperRecord | null,
     opts?: { onError?: (msg: string) => void },
@@ -240,10 +245,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const applyThemeChoice = useCallback(
     (next: ThemePreference) => {
       saveThemePreference(localStorage, next);
-      setThemePreference(next);
       // Dual-write Host settings so the next cold start can paint the boot
       // shell + native chrome before React loads (see resolve_boot_theme).
       void persistThemeToHostSettings(next);
+      if (next === "light" || next === "dark") {
+        runThemeTransition(() => {
+          applyThemeToDocument(next);
+          flushSync(() => setThemePreference(next));
+        });
+        return;
+      }
+      setThemePreference(next);
       if (next === "system" && themeSchedule.enabled) {
         const resolved = resolveThemeWithSchedule(
           next,
@@ -334,10 +346,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   const applySkinChoice = useCallback(
-    (next: ThemeSkinId) => {
+    (next: ThemeSkinId, opts?: { applyPreferredTheme?: boolean }) => {
       saveSkin(localStorage, next);
       applySkinToDocument(next);
       setSkin(next);
+      if (opts?.applyPreferredTheme === false) return;
       const preferred = skinPreferredTheme(next);
       if (preferred && preferred !== theme) {
         applyThemeChoice(preferred);

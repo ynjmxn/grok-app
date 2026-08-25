@@ -1100,13 +1100,31 @@ fn apply_grok_build_proxy_env(
 
 /// Whether this ACP process should call `authenticate(cached_token)`.
 ///
-/// Custom relays must not load official OIDC. Grok Build sends OIDC once
-/// `cached_token` succeeds — even when the request URL is a custom relay
-/// (HTTP 400 Incorrect API key / 401). `cached_token` reads `~/.grok/auth.json`,
-/// which official login must keep for Account billing / official-aux. Clearing
-/// only agent-home `auth.json` is not enough.
-pub fn should_authenticate_cached_token(custom_route: bool) -> bool {
-    !custom_route
+/// Skip when:
+/// - **custom relay** — Grok Build sends OIDC once `cached_token` succeeds,
+///   even when the request URL is a custom relay (HTTP 400 Incorrect API key
+///   / 401). `cached_token` reads `~/.grok/auth.json`, which official login
+///   must keep for Account billing / official-aux. Clearing only agent-home
+///   `auth.json` is not enough.
+/// - **unsigned-in** — no usable cached token (`auth.json` missing, or no
+///   `key` / `access_token` / `refresh_token`). The CLI has nothing to load;
+///   sending `authenticate` waits `AUTH_TIMEOUT_SECS` twice then soft-fails
+///   (~24s of ERROR logs) while the workbench still opens idle.
+///
+/// Keep the call when the official route is signed in. The #528
+/// signed-in-but-agent-home-stale path still re-syncs and retries once.
+pub fn should_authenticate_cached_token(custom_route: bool, has_cached_token: bool) -> bool {
+    !custom_route && has_cached_token
+}
+
+/// Host-side probe: official OIDC material exists for `cached_token`.
+///
+/// Uses [`crate::account::read_auth_profile`] (canonical `~/.grok/auth.json`
+/// preferred over an empty agent-home copy). Does not unlock the App keychain
+/// or treat an official API key as a cached token — those are not what
+/// `authenticate(cached_token)` loads.
+pub fn has_cached_token_for_authenticate() -> bool {
+    crate::account::read_auth_profile().signed_in
 }
 
 impl AcpClient {
@@ -1380,6 +1398,7 @@ impl AcpClient {
             // --disallowed-tools which is headless-only). Official route / inject
             // off removes the managed hook file.
             let _ = crate::official_aux::sync_native_media_block_hook_for_current(prep_mode);
+            let _ = crate::extensions::sync_user_mcp_for_official_aux_inject(prep_mode);
             // Heal duplicate keys left by older upsert bugs (e.g. yolo vs yolo_mode).
             // Valid configs are never rewritten. Soft-fail so spawn still attempts.
             match crate::agent_home_config::ensure_agent_home_config_sane(prep_mode) {
@@ -2478,9 +2497,9 @@ pub fn parse_usage_update(kind: &str, update: &Value) -> Option<AcpEvent> {
     // Normalize source so the frontend occupancy classifier matches CLI events.
     let source = if kind == "auto_compact_started" || kind.ends_with("auto_compact_started") {
         "auto_compact_started".to_string()
-    } else if kind == "tokens_used" {
-        "tokens_used".to_string()
-    } else if occupancy.is_some() && input.is_none() && output.is_none() && kind.is_empty() {
+    } else if kind == "tokens_used"
+        || (occupancy.is_some() && input.is_none() && output.is_none() && kind.is_empty())
+    {
         "tokens_used".to_string()
     } else {
         kind.to_string()
@@ -2827,7 +2846,11 @@ impl AcpClient {
         // Custom relays must skip this: `cached_token` reads ~/.grok/auth.json
         // (still present after official login for billing). Grok Build then
         // sends OIDC to the relay and the user sees “works until I sign in”.
-        if should_authenticate_cached_token(self.custom_route) {
+        //
+        // Unsigned-in official route must also skip: there is no token to
+        // load, and the CLI authenticate RPC times out at 12s × 2.
+        let has_cached_token = has_cached_token_for_authenticate();
+        if should_authenticate_cached_token(self.custom_route, has_cached_token) {
             match self
                 .request_timeout(
                     "authenticate",
@@ -2860,8 +2883,10 @@ impl AcpClient {
                     }
                 }
             }
-        } else {
+        } else if self.custom_route {
             info!("acp authenticate skipped (custom route: api_key only)");
+        } else {
+            info!("acp authenticate skipped (unsigned-in: no cached_token)");
         }
         Ok(init)
     }
@@ -4905,8 +4930,8 @@ mod context_tokens_tests {
         let windows = parse_model_context_tokens(&init);
         assert_eq!(windows.len(), 1);
         assert_eq!(windows.get("has-window"), Some(&128000));
-        assert!(windows.get("no-window").is_none());
-        assert!(windows.get("no-meta").is_none());
+        assert!(!windows.contains_key("no-window"));
+        assert!(!windows.contains_key("no-meta"));
     }
 
     #[test]
@@ -6933,8 +6958,18 @@ mod cached_token_route_tests {
         // cached_token reads that file even when GROK_HOME is agent-home.
         // Loading OIDC into a custom-relay process makes Grok Build send OIDC
         // to the relay (HTTP 400/401) — "works until I sign in".
-        assert!(!should_authenticate_cached_token(true));
-        assert!(should_authenticate_cached_token(false));
+        assert!(!should_authenticate_cached_token(true, true));
+        assert!(!should_authenticate_cached_token(true, false));
+    }
+
+    #[test]
+    fn official_route_authenticates_only_when_cached_token_exists() {
+        // Signed-in official: still send authenticate (and keep the #528
+        // re-sync + one retry on soft-fail).
+        assert!(should_authenticate_cached_token(false, true));
+        // Unsigned-in (no auth.json / no usable token): skip entirely.
+        // Sending authenticate here is a 12s × 2 timeout then soft-fail.
+        assert!(!should_authenticate_cached_token(false, false));
     }
 }
 

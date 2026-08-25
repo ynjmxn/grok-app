@@ -11,14 +11,19 @@ import {
   IconRestore,
 } from "@/components/icons";
 import { Tip } from "@/components/ui/tooltip";
+import { detectAppPlatform } from "@/lib/appPlatform";
 import {
+  CAPTION_BUTTON_TOGGLE_DEFER_MS,
   isFakeMaximized,
-  subscribeDesktopViewportPin,
+  scheduleCaptionButtonToggle,
   toggleMaximizeFromTitlebar,
   toggleMaximizeReliable,
 } from "@/lib/windowChrome";
 
-export { toggleMaximizeFromTitlebar } from "@/lib/windowChrome";
+export {
+  tauriDragRegion,
+  toggleMaximizeFromTitlebar,
+} from "@/lib/windowChrome";
 
 type Props = {
   visible: boolean;
@@ -46,7 +51,6 @@ export function WindowControls({ visible, labels }: Props) {
   useEffect(() => {
     if (!visible) return;
     void refreshMaximized();
-    const unpin = subscribeDesktopViewportPin();
     let unlistenResize: (() => void) | undefined;
     let unlistenMoved: (() => void) | undefined;
     let cancelled = false;
@@ -75,7 +79,6 @@ export function WindowControls({ visible, labels }: Props) {
       cancelled = true;
       unlistenResize?.();
       unlistenMoved?.();
-      unpin();
     };
   }, [visible, refreshMaximized]);
 
@@ -95,13 +98,24 @@ export function WindowControls({ visible, labels }: Props) {
 
   if (!visible) return null;
 
+  const stopChromePointer = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+  };
+
   return (
-    <div className="window-controls" data-tauri-drag-region={undefined}>
-      <Tip label={labels.minimize}>
+    <>
+      <div className="window-edge-n" aria-hidden="true" />
+      <div
+        className="window-controls"
+        data-tauri-drag-region={undefined}
+        onPointerDown={stopChromePointer}
+      >
+        <Tip label={labels.minimize}>
         <button
           type="button"
           className="window-controls__btn"
           aria-label={labels.minimize}
+          onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
             void winChrome("minimize");
@@ -109,25 +123,30 @@ export function WindowControls({ visible, labels }: Props) {
         >
           <IconMinimize size={14} />
         </button>
-      </Tip>
-      <Tip label={maximized ? labels.restore : labels.maximize}>
+        </Tip>
+        <Tip label={maximized ? labels.restore : labels.maximize}>
         <button
           type="button"
           className="window-controls__btn"
           aria-label={maximized ? labels.restore : labels.maximize}
+          onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
-            void winChrome("toggleMaximize");
+            e.preventDefault();
+            scheduleCaptionButtonToggle(() => {
+              void winChrome("toggleMaximize");
+            }, CAPTION_BUTTON_TOGGLE_DEFER_MS);
           }}
         >
           {maximized ? <IconRestore size={14} /> : <IconMaximize size={14} />}
         </button>
-      </Tip>
-      <Tip label={labels.close}>
+        </Tip>
+        <Tip label={labels.close}>
         <button
           type="button"
           className="window-controls__btn window-controls__btn--close"
           aria-label={labels.close}
+          onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
             void winChrome("close");
@@ -135,8 +154,9 @@ export function WindowControls({ visible, labels }: Props) {
         >
           <IconClose size={14} />
         </button>
-      </Tip>
-    </div>
+        </Tip>
+      </div>
+    </>
   );
 }
 
@@ -165,7 +185,10 @@ export function titlebarMaximizeHandlers(opts?: {
     preventDefault: () => void;
   }) => void;
 } {
-  const enabled = opts?.enabled !== false;
+  // Windows: compositor caption dblclick maximizes (mouse is up). A JS
+  // toggle on mousedown(detail=2) races Aero drag-to-restore.
+  const enabled =
+    opts?.enabled !== false && detectAppPlatform() !== "win";
   return {
     onDoubleClick: (e) => {
       if (!enabled) return;

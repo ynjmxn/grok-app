@@ -8,11 +8,13 @@
 use tauri::AppHandle;
 
 /// Host → frontend when Windows default *app* mode changes.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const OS_THEME_CHANGED_EVENT: &str = "os-theme://changed";
 
 /// `AppsUseLightTheme` DWORD: `0` = dark apps, `1` = light. Missing → dark.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apps_prefer_dark_from_dword(apps: Option<u32>) -> bool {
-    !apps.is_some_and(|v| v != 0)
+    apps.is_none_or(|v| v == 0)
 }
 
 /// Best-effort OS dark/light probe (no extra deps).
@@ -27,11 +29,11 @@ pub fn os_prefers_dark() -> bool {
             let s = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
             return s.contains("dark");
         }
-        return true;
+        true
     }
     #[cfg(target_os = "windows")]
     {
-        return apps_prefer_dark();
+        apps_prefer_dark()
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

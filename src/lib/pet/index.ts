@@ -56,11 +56,7 @@ export {
   type PetBubbleStyle,
 } from "./petBubbleChrome";
 
-export {
-  PET_DBLCLICK_MS,
-  PET_PEEK_HIDE_MS,
-  petMarkClickIntent,
-} from "./petClick";
+export { PET_DBLCLICK_MS, petMarkClickIntent } from "./petClick";
 
 export {
   petStageSnippetStore,
@@ -141,6 +137,18 @@ export {
 } from "./bloubPlay";
 
 export { petDoneTaskIds, shouldTriggerPetSpin } from "./petCelebrate";
+
+export {
+  petLookIsNear,
+  petPaintMinMs,
+} from "./petMarkPaint";
+
+export {
+  petMarkScreenCenter,
+  petNormXOnWorkArea,
+  petShouldMirrorFace,
+  petShouldMirrorFromOverlay,
+} from "./petFaceMirror";
 
 export {
   PET_HOVER_LISTEN_MS,

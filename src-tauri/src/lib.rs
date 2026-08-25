@@ -129,6 +129,8 @@ mod project_codebase_search;
 
 mod project_rules;
 
+mod provider_headers;
+
 mod providers;
 
 mod proxy;
@@ -190,6 +192,8 @@ mod win_taskbar_overlay;
 
 mod os_theme;
 
+mod system_fonts;
+
 mod desktop_notify;
 
 mod turn_complete;
@@ -219,6 +223,16 @@ mod wallpaper_source;
 
 mod window_min;
 
+mod skin_catalog;
+mod skin_deeplink;
+mod skin_disk;
+mod skin_image_bake;
+mod skin_net;
+mod skin_pack;
+mod skin_presets;
+mod skin_staging;
+mod skin_video_bake;
+
 #[cfg(windows)]
 mod win_shell;
 
@@ -245,12 +259,13 @@ pub fn run() {
     crate::host_runtime::on_process_start();
     crate::win_crash::install();
 
-    // Windows: AppUserModelID before window/taskbar so Show Desktop / jump lists
+    let context = tauri::generate_context!();
 
-    // treat us as a normal app (matches NSIS shortcut AUMID).
+    // Windows: AppUserModelID before window/taskbar so Show Desktop / jump lists
+    // treat us as a normal app (matches NSIS shortcut AUMID / `pnpm dev` overlay).
 
     #[cfg(windows)]
-    win_shell::set_process_app_user_model_id();
+    win_shell::set_process_app_user_model_id(&context.config().identifier);
 
     let session_mgr = Arc::new(SessionManager::new());
 
@@ -261,6 +276,8 @@ pub fn run() {
     let remote_im_state = Arc::new(remote_im::RemoteImState {
         inner: tokio::sync::Mutex::new(remote_im::BridgeRuntime::default()),
     });
+
+    let pending_skin = Arc::new(skin_deeplink::PendingSlot::default());
 
     // Attach `tauri-plugin-updater` only when release CI injected GROK_UPDATER_*
 
@@ -315,10 +332,13 @@ pub fn run() {
                 return;
             }
 
-            // Same restore path as tray Open — taskbar + shell styles included.
-
-            tray::show_main_window(app);
+            let kind = skin_deeplink::ingest_argv_into(app, &argv);
+            if kind != skin_deeplink::ArgvIngest::FireDue {
+                // Same restore path as tray Open — taskbar + shell styles included.
+                tray::show_main_window(app);
+            }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // Always register process so release builds can relaunch after install.
         .plugin(tauri_plugin_process::init())
@@ -371,6 +391,8 @@ pub fn run() {
         .manage(voice_host)
 
         .manage(remote_im_state)
+
+        .manage(pending_skin)
 
         // Range-capable media streaming (video/audio/pdf) — never loads multi‑GB into RAM.
 
@@ -466,10 +488,15 @@ pub fn run() {
                         schedule_persist_main_window_state(window.app_handle());
                     }
                 }
-                WindowEvent::Resized(_) => {
-                    if window.label() == "main" {
+                WindowEvent::Resized(_)
+                    if window.label() == "main" => {
                         schedule_persist_main_window_state(window.app_handle());
                     }
+                WindowEvent::Focused(focused) if window.label() == "main" => {
+                    // Launch first-interaction dead-zone diagnosis: trace every
+                    // key-window transition so a lost activation race is visible
+                    // in the log (first click / ⌘, eaten = no Focused(true)).
+                    tracing::info!("main window focused={focused}");
                 }
                 _ => {}
             }
@@ -552,7 +579,86 @@ pub fn run() {
                 .visible(false)
                 .accept_first_mouse(true)
                 .initialization_script(&boot_theme_script)
+                .on_page_load(|window, payload| {
+                    // Cold-launch first-click / first-key dead zone: the
+                    // set_focus() right after show() occasionally loses the
+                    // activation race, leaving a key window whose app is still
+                    // INACTIVE (macOS cooperative activation silently ignores
+                    // activateIgnoringOtherApps from a background process — e.g.
+                    // dev launched from a terminal). isKeyWindow is then true,
+                    // so an is_focused guard would wrongly skip; clicks still
+                    // land (accept_first_mouse) but NO key events reach the app
+                    // while NSApp is inactive — ⌘, stays dead until one click
+                    // activates us. Reassert unconditionally ONCE when the page
+                    // has loaded, then repair the residual stuck state (key
+                    // window + inactive app) with guarded retries. Note: tao's
+                    // set_focus short-circuits while hidden — setup shows the
+                    // window synchronously before any page load can finish,
+                    // which this reassert relies on.
+                    use std::sync::atomic::{AtomicBool, Ordering};
+                    static REASSERTED: AtomicBool = AtomicBool::new(false);
+                    if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                        return;
+                    }
+                    if REASSERTED.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
+                    let app_active_at_load = ns_app_is_active();
+                    tracing::info!(
+                        focused_at_load = window.is_focused().unwrap_or(false),
+                        app_active_at_load,
+                        "main page loaded — reasserting launch focus/activation"
+                    );
+                    let _ = window.set_focus();
+                    {
+                        let w = window.clone();
+                        let _ = window.run_on_main_thread(move || {
+                            point_keys_at_webview(&w);
+                        });
+                    }
+                    if !app_active_at_load && cfg!(target_os = "macos") {
+                        // Repair loop for the pathological state: the window
+                        // claims key while NSApp is inactive (cooperative
+                        // activation denied/raced). Retry a few times over ~2s.
+                        // Guard: if the user deliberately switched away, our
+                        // window loses key → bail instead of yanking them back;
+                        // once active, stop immediately.
+                        let w = window.clone();
+                        tauri::async_runtime::spawn(async move {
+                            for attempt in 1..=8u8 {
+                                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                                if ns_app_is_active() {
+                                    return;
+                                }
+                                if !w.is_focused().unwrap_or(false) {
+                                    tracing::info!(
+                                        attempt,
+                                        "launch activation repair: window lost key (user moved on or pet briefly keyed)"
+                                    );
+                                    return;
+                                }
+                                tracing::info!(attempt, "repairing launch activation (key window + inactive app)");
+                                let _ = w.set_focus();
+                                let wr = w.clone();
+                                let _ = w.run_on_main_thread(move || {
+                                    point_keys_at_webview(&wr);
+                                });
+                            }
+                            tracing::warn!("launch activation repair gave up; first click will activate");
+                        });
+                    }
+                })
                 .build()?;
+            #[cfg(debug_assertions)]
+            {
+                if let Ok(icon) =
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/dev/icon.png"))
+                {
+                    if let Err(e) = window.set_icon(icon) {
+                        tracing::warn!("debug white icon: {e}");
+                    }
+                }
+            }
             window_min::apply_main(window.app_handle());
 
             #[cfg(target_os = "macos")]
@@ -696,6 +802,37 @@ pub fn run() {
             // Windows: AppsUseLightTheme → frontend (WebView2 matchMedia stays frozen).
             os_theme::watch(app.handle());
 
+            // Cold-start argv: grok:// or *.grokskin → pending. Never steal fire-due.
+            if !automation_runner::wants_fire_due_schedules() {
+                let args: Vec<String> = std::env::args().collect();
+                skin_deeplink::ingest_argv_into(app.handle(), &args);
+            }
+
+            // Plugin URL + Apple Event must honor fire-due the same as argv:
+            // no pending, no emit, no window focus.
+            if !automation_runner::wants_fire_due_schedules() {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                match app.deep_link().get_current() {
+                    Ok(Some(urls)) => {
+                        for u in urls {
+                            skin_deeplink::ingest_uri_string(&handle, u.as_str());
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::debug!(target: "skin_deeplink", "get_current: {e}"),
+                }
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    if automation_runner::wants_fire_due_schedules() {
+                        return;
+                    }
+                    for u in event.urls() {
+                        skin_deeplink::ingest_uri_string(&handle, u.as_str());
+                    }
+                });
+            }
+
             // macOS: pin notification delivery to com.grokapp.desktop and request
             // UNUserNotificationCenter auth so Grok appears in System Settings.
             desktop_notify::request_permission_on_startup();
@@ -828,7 +965,7 @@ pub fn run() {
 
             let pet_prefs = pet_window::load_prefs();
             if pet_prefs.enabled && pet_prefs.visible {
-                if let Err(e) = pet_window::show_pet(&app.handle()) {
+                if let Err(e) = pet_window::show_pet(app.handle()) {
                     tracing::warn!("pet restore: {e}");
                 }
             }
@@ -1312,6 +1449,8 @@ pub fn run() {
 
             os_theme::os_theme_current,
 
+            system_fonts::list_system_font_families,
+
             desktop_notify::desktop_notify_show,
 
             desktop_notify::desktop_notify_available,
@@ -1440,6 +1579,8 @@ pub fn run() {
 
             mirror::mirror_set_max_clients,
 
+            mirror::mirror_set_allow_lan,
+
             mirror::mirror_start,
 
             mirror::mirror_stop,
@@ -1489,6 +1630,36 @@ pub fn run() {
             commands::wallpaper_library_list,
 
             commands::wallpaper_library_delete,
+
+            commands::skin_pick_open,
+            commands::skin_pick_save,
+            commands::skin_pack_inspect,
+            commands::skin_inspect_abort,
+            commands::skin_pack_export,
+            commands::skin_staging_begin,
+            commands::skin_staging_append,
+            commands::skin_staging_abort,
+            commands::skin_preset_list,
+            commands::skin_preset_save_from_upload,
+            commands::skin_preset_save_from_inspect,
+            commands::skin_preset_materialize,
+            commands::skin_preset_delete,
+            commands::skin_preset_rename,
+            commands::skin_preset_replace_from_upload,
+            commands::skin_preset_export,
+            commands::skin_undo_prepare,
+            commands::skin_undo_append,
+            commands::skin_undo_commit,
+            commands::skin_undo_abort,
+            commands::skin_catalog_fetch,
+            commands::skin_catalog_download,
+            commands::skin_catalog_preview_path,
+            commands::skin_sources_list,
+            commands::skin_sources_add,
+            commands::skin_sources_remove,
+            commands::skin_sources_set_enabled,
+            commands::skin_import_take_pending,
+            commands::skin_pack_fetch_url,
 
             commands::streaming_messages_json_probe,
 
@@ -1556,7 +1727,7 @@ pub fn run() {
 
         ])
 
-        .build(tauri::generate_context!())
+        .build(context)
 
         .expect("error while building Grok App")
 
@@ -1567,11 +1738,18 @@ pub fn run() {
             // bringing the workbench back.
 
             #[cfg(target_os = "macos")]
-
-            if let tauri::RunEvent::Reopen { .. } = event {
-
-                tray::show_main_window(app);
-
+            {
+                if let tauri::RunEvent::Opened { urls } = &event {
+                    if !automation_runner::wants_fire_due_schedules() {
+                        for url in urls {
+                            skin_deeplink::ingest_opened_url(app, url);
+                        }
+                        tray::show_main_window(app);
+                    }
+                }
+                if let tauri::RunEvent::Reopen { .. } = event {
+                    tray::show_main_window(app);
+                }
             }
 
             // Full exit (tray Quit / Cmd+Q): tear down mirror host + cloudflared group.
@@ -1596,6 +1774,52 @@ pub fn run() {
 
         });
 }
+
+/// NSApp activation state. Key events only reach the web while the app is
+/// ACTIVE; a key window on an inactive app is the launch dead-zone pathology
+/// (macOS cooperative activation silently denies background self-activation).
+#[cfg(target_os = "macos")]
+fn ns_app_is_active() -> bool {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        msg_send![app, isActive]
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ns_app_is_active() -> bool {
+    true
+}
+
+/// Point the key window's first responder at the WKWebView so key events reach
+/// the DOM (web shortcuts like ⌘,). `makeKeyAndOrderFront` alone can leave the
+/// NSWindow itself as initial first responder: app ACTIVE + window key, yet
+/// every keystroke dies in the responder chain until one click focuses the
+/// web view. Idempotent; logs when it had to re-point.
+#[cfg(target_os = "macos")]
+fn point_keys_at_webview(win: &tauri::WebviewWindow) {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    let (Ok(ns_win), Ok(ns_view)) = (win.ns_window(), win.ns_view()) else {
+        return;
+    };
+    unsafe {
+        let ns_win = ns_win as *mut AnyObject;
+        let ns_view = ns_view as *mut AnyObject;
+        let resp: *mut AnyObject = msg_send![ns_win, firstResponder];
+        let resp_is_webview: bool = msg_send![resp, isKindOfClass: class!(WKWebView)];
+        if !resp_is_webview {
+            tracing::info!("main first responder is not the webview — re-pointing keys at DOM");
+            let _: () = msg_send![ns_win, makeFirstResponder: ns_view];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn point_keys_at_webview(_win: &tauri::WebviewWindow) {}
 
 /// Resolve AppSettings.theme (`system` | `light` | `dark`) to a concrete
 /// boot theme for the static shell and native chrome before React loads.

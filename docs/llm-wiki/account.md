@@ -33,6 +33,8 @@ Host **must** sync `auth.json` into agent-home on login and before each ACP spaw
 
 **Custom route + official login:** keep `~/.grok/auth.json` (billing / official-aux) but do **not** copy it into the custom main agent-home, and do **not** call ACP `authenticate(cached_token)` on that process. `cached_token` reads `~/.grok/auth.json` even when `GROK_HOME` is agent-home; Grok Build then sends OIDC to the relay (`HTTP 400 Incorrect API key` / 401). Symptom: relay works until the user signs in, and works again immediately after logout.
 
+**Unsigned-in official route:** if `read_auth_profile().signed_in` is false (no `auth.json`, or no usable `key` / `access_token` / `refresh_token`), **do not** send `authenticate(cached_token)`. The CLI has nothing to load; the RPC waits 12s, retries once after a no-op re-sync, then soft-fails (~24s of ERROR logs) while the workbench still opens idle. This is **not** the #528 “logged in but agent-home missing token” path — that still authenticates, re-syncs `~/.grok` → agent-home, and retries once. An official API key / keychain key is not a cached token and must not trigger this RPC.
+
 ### Warm process recycle after auth change
 
 Syncing the file is not enough while multi-session **parked** / **prewarm** CLI processes still hold credentials loaded at spawn time. Connect prefers a Ready prewarm when policy/effort/route match.
@@ -113,8 +115,13 @@ Some auth.x.ai sessions (not always) show a long code and ask to **paste into Gr
 
 Grok Build CLI does **not** expose grok.com web history. Supported migration:
 
+- Settings → Account → **Recent sessions**: **Import & open** on a row, or **Import listed** for the visible table. Row `id` is the CLI agent session id; Host `cli_session_import` copies `chat_history.jsonl` into an App journal (idempotent if already linked). Host `validate_agent_session_id` rejects empty / path / `..` ids before any session-dir join (same helper as CLI session delete).
+- Settings → General → App → **CLI sessions**: search / import all (cap 50) / open linked chats.
+- Sidebar empty state: **Import from Grok Build** when local call logs exist and the sidebar has ≤1 unarchived chat.
 - Settings → Account → **Import conversation** (`.md` / `.json` / `.txt`)
 - Formats: `## User` / `## Assistant` markdown, or JSON `[{role,content}]`
+
+CLI import may add an **untrusted** App project for the session cwd (skips `$HOME`, `/`, and shallow paths). Trust still requires the usual project confirm.
 
 ## Settings IA
 

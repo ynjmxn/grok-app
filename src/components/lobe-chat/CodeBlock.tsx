@@ -2,9 +2,10 @@
  * Path / code block — Cursor-style soft chrome (label + wrap + copy).
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { IconCheck, IconCopy } from "@/components/icons";
 import { Tip } from "@/components/ui/tooltip";
+import { formatLineNumberGutter } from "@/lib/codeBlockGutter";
 import {
   CODE_LINE_NUMBERS_PREF_EVENT,
   loadCodeLineNumbersPref,
@@ -14,8 +15,12 @@ import { cn } from "@/lib/utils";
 
 function extractText(node: ReactNode): string {
   if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) {
+    if (node.length === 1 && typeof node[0] === "string") return node[0];
+    return node.map(extractText).join("");
+  }
   if (typeof node === "object" && "props" in node) {
     const p = node as { props?: { children?: ReactNode } };
     return extractText(p.props?.children);
@@ -23,7 +28,7 @@ function extractText(node: ReactNode): string {
   return "";
 }
 
-export function CodeBlock({
+export const CodeBlock = memo(function CodeBlock({
   language,
   children,
   wrapLabel = "Wrap",
@@ -45,9 +50,19 @@ export function CodeBlock({
   );
   const [copied, setCopied] = useState(false);
   const lang = (language || "text").replace(/^language-/, "") || "text";
-  const text = extractText(children).replace(/\n$/, "");
+  const text = useMemo(
+    () => extractText(children).replace(/\n$/, ""),
+    [children],
+  );
   const showLineNumbers = showLineNumbersProp ?? prefLineNumbers;
-  const lineCount = Math.max(1, text.split("\n").length);
+  const lineCount = useMemo(
+    () => Math.max(1, text.split("\n").length),
+    [text],
+  );
+  const gutterText = useMemo(
+    () => (showLineNumbers ? formatLineNumberGutter(lineCount) : ""),
+    [showLineNumbers, lineCount],
+  );
 
   useEffect(() => {
     if (showLineNumbersProp !== undefined) return;
@@ -102,13 +117,9 @@ export function CodeBlock({
       </div>
       <div className="chat-code__body">
         {showLineNumbers ? (
-          <div className="chat-code__gutter" aria-hidden>
-            {Array.from({ length: lineCount }, (_, i) => (
-              <span key={i} className="chat-code__ln">
-                {i + 1}
-              </span>
-            ))}
-          </div>
+          <pre className="chat-code__gutter" aria-hidden>
+            {gutterText}
+          </pre>
         ) : null}
         <pre className={cn("chat-code__pre", wrap && "is-wrap")}>
           <code>{children}</code>
@@ -116,4 +127,4 @@ export function CodeBlock({
       </div>
     </div>
   );
-}
+});

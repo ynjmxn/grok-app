@@ -79,21 +79,6 @@ New Issue
 
 ---
 
-## pi review loop (mandatory)
-
-Canonical copy lives in [`AGENTS.md`](../../AGENTS.md) §8. This section is a pointer, not a second policy.
-
-**修复 / 合并 / review** 都必须有 **pi** 参与审查纠错。
-
-- **每完成一项 审核校对**（一项 = 一个 CI 拆分、一个 PR、一个自修、一段流程文档）。
-- **有问题修复**，修完再交 pi 复审；**没问题下一项**。
-- 整批完成后做一次 **联合 review**。
-- 调用：`pi -p`，只开 `read`/`bash`，禁止 pi 改树。`pi` 不可用则停下并记录，不得用自我复查顶替。
-
-After each land: thank the author; confirm `Fixes`/`Closes` closed the linked issue; check CHANGELOG Unreleased was not clobbered; then branch hygiene (previous section).
-
----
-
 ## PR review (community + maintainer)
 
 ### Must pass
@@ -234,7 +219,7 @@ When an agent maintains this repo:
 5. Redact tokens in logs and Issue bodies  
 6. After multi-issue work: leave a short status in the PR / reply (what fixed, what remains)  
 7. **After land:** safely clear merged remote/local branches and finished worktrees (Branch hygiene) — do not leave long-lived `pr-*` / integrate leftovers  
-8. **App.tsx freeze:** never add new `useState` or feature blocks to `src/App.tsx`; put them in domain providers/hooks/components. Remediation baseline ~24842 lines — only shrink.
+8. **App shell + AppWorkbench freeze:** never add new `useState` or feature blocks to `src/App.tsx` or `src/app/AppWorkbench.tsx`; put them in domain providers/hooks/components. Combined lines may only decrease (gate ceilings in `scripts/check-code-quality-gates.py`).
 ---
 
 ## Current community backlog snapshot (launch feedback)

@@ -93,7 +93,11 @@ import {
   type SidebarDensity,
 } from "@/lib/sidebarDensity";
 import type { WallpaperSourceTab } from "@/components/WallpaperSourceModal";
-import { titlebarMaximizeHandlers } from "@/components/WindowControls";
+import { detectAppPlatform } from "@/lib/appPlatform";
+import {
+  tauriDragRegion,
+  titlebarMaximizeHandlers,
+} from "@/components/WindowControls";
 import {
   loadComposerSendKeyPref,
   type ComposerSendKeyPref,
@@ -189,6 +193,10 @@ import {
 import type { MarqueeBox } from "@/components/settings/types";
 import { GeneralSection } from "@/components/settings/GeneralSection";
 import { AppearanceSection } from "@/components/settings/AppearanceSection";
+import {
+  acquireAppearanceWrite,
+  subscribeAppearanceWriteBusy,
+} from "@/lib/appearanceWriteLock";
 import { AccountSection } from "@/components/settings/AccountSection";
 import { ArchivedSection } from "@/components/settings/ArchivedSection";
 import { ExtensionsSection } from "@/components/settings/ExtensionsSection";
@@ -245,6 +253,8 @@ export function SettingsPage({
   onShowReplyLength,
   replaceProviderBrandLogo = false,
   onReplaceProviderBrandLogo,
+  welcomeMotionEnabled = true,
+  onWelcomeMotionEnabled,
   goalOrchUiEnabled = true,
   onGoalOrchUiEnabled,
   messageTimeFormat = "absolute",
@@ -525,6 +535,8 @@ export function SettingsPage({
   const archivedSurfaceRef = useRef<HTMLDivElement>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const [appearanceWriteBusy, setAppearanceWriteBusy] = useState(false);
+  useEffect(() => subscribeAppearanceWriteBusy(setAppearanceWriteBusy), []);
   const [wallpaperError, setWallpaperError] = useState<string | null>(null);
   const [wallpaperFocusOpen, setWallpaperFocusOpen] = useState(false);
   const [wallpaperSourceOpen, setWallpaperSourceOpen] = useState(false);
@@ -913,6 +925,7 @@ export function SettingsPage({
   const onWallpaperFile = useCallback(
     async (file: File | null | undefined) => {
       if (!file || !onWallpaper) return;
+      const unlock = await acquireAppearanceWrite();
       setWallpaperBusy(true);
       setWallpaperError(null);
       try {
@@ -925,6 +938,7 @@ export function SettingsPage({
         throw e;
       } finally {
         setWallpaperBusy(false);
+        unlock();
         if (wallpaperInputRef.current) wallpaperInputRef.current.value = "";
       }
     },
@@ -1419,6 +1433,8 @@ export function SettingsPage({
     onShowReplyLength,
     replaceProviderBrandLogo,
     onReplaceProviderBrandLogo,
+    welcomeMotionEnabled,
+    onWelcomeMotionEnabled,
     goalOrchUiEnabled,
     onGoalOrchUiEnabled,
     messageTimeFormat,
@@ -1659,7 +1675,7 @@ export function SettingsPage({
     marquee,
     archivedSurfaceRef,
     wallpaperInputRef,
-    wallpaperBusy,
+    wallpaperBusy: wallpaperBusy || appearanceWriteBusy,
     wallpaperError,
     setWallpaperError,
     wallpaperFocusOpen,
@@ -1755,7 +1771,7 @@ export function SettingsPage({
       {/* Full-width overlay drag band (does not break glass nav continuity) */}
       <div
         className="settings-page__chrome"
-        data-tauri-drag-region
+        data-tauri-drag-region={tauriDragRegion(detectAppPlatform())}
         aria-hidden
         {...titlebarMaximizeHandlers()}
       />

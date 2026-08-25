@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { GlassModal } from "@/components/GlassModal";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import {
   IconActivity,
   IconAlertTriangle,
@@ -41,6 +42,13 @@ import {
   type GoalOrchPhaseFilter,
 } from "@/lib/goalOrch";
 import {
+  type ReliabilityBusySession,
+  type ReliabilityCenterView,
+  type ReliabilityErrorEntry,
+  type ReliabilityStallKind,
+  type ReliabilityStallSignal,
+} from "@/lib/reliabilityCenter";
+import {
   applyClearStallHistoryPlan,
   buildStallHistoryExport,
   buildStallTimelineSnapshot,
@@ -51,13 +59,8 @@ import {
   serializeStallTimelineSnapshot,
   STALL_HISTORY_CHANGE_EVENT,
   STALL_HISTORY_STORAGE_KEY,
-  type ReliabilityBusySession,
-  type ReliabilityCenterView,
-  type ReliabilityErrorEntry,
-  type ReliabilityStallKind,
-  type ReliabilityStallSignal,
   type StallHistoryEntry,
-} from "@/lib/reliabilityCenter";
+} from "@/lib/reliabilityStallHistory";
 import {
   formatStallDuration,
   planOpenStallSession,
@@ -1030,28 +1033,19 @@ export function ReliabilityCenterModal({
                   </div>
 
                   {goalPhaseChips.length > 0 ? (
-                    <div
-                      className="reliab-timeline__chips settings-seg"
+                    <SegmentedControl
                       role="tablist"
-                      aria-label={t("reliability.goal.filterAria")}
-                    >
-                      {goalChips.map((c) => (
-                        <button
-                          key={c.id}
-                          type="button"
-                          role="tab"
-                          className={
-                            "settings-seg__btn reliab-timeline__chip" +
-                            (goalPhaseFilter === c.id ? " is-on" : "")
-                          }
-                          aria-selected={goalPhaseFilter === c.id}
-                          data-testid={`reliab-goal-filter-${c.id}`}
-                          onClick={() => setGoalPhaseFilter(c.id)}
-                        >
-                          {c.label}
-                        </button>
-                      ))}
-                    </div>
+                      ariaLabel={t("reliability.goal.filterAria")}
+                      className="reliab-timeline__chips"
+                      value={goalPhaseFilter}
+                      options={goalChips.map((c) => ({
+                        value: c.id,
+                        label: c.label,
+                        className: "reliab-timeline__chip",
+                        testId: `reliab-goal-filter-${c.id}`,
+                      }))}
+                      onChange={setGoalPhaseFilter}
+                    />
                   ) : null}
                 </>
               ) : null}
@@ -1206,28 +1200,19 @@ export function ReliabilityCenterModal({
                   </button>
                 </div>
 
-                <div
-                  className="reliab-timeline__chips settings-seg"
+                <SegmentedControl
                   role="tablist"
-                  aria-label={t("reliability.timeline.filterAria")}
-                >
-                  {historyChips.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      role="tab"
-                      className={
-                        "settings-seg__btn reliab-timeline__chip" +
-                        (historyKind === c.id ? " is-on" : "")
-                      }
-                      aria-selected={historyKind === c.id}
-                      data-testid={`reliab-timeline-filter-${c.id}`}
-                      onClick={() => setHistoryKind(c.id)}
-                    >
-                      {c.label}
-                    </button>
-                  ))}
-                </div>
+                  ariaLabel={t("reliability.timeline.filterAria")}
+                  className="reliab-timeline__chips"
+                  value={historyKind}
+                  options={historyChips.map((c) => ({
+                    value: c.id,
+                    label: c.label,
+                    className: "reliab-timeline__chip",
+                    testId: `reliab-timeline-filter-${c.id}`,
+                  }))}
+                  onChange={setHistoryKind}
+                />
 
                 {timelineEmpty ? (
                   <div
@@ -1378,28 +1363,19 @@ export function ReliabilityCenterModal({
               </button>
             </div>
 
-            <div
-              className="reliab-timeline__chips settings-seg"
+            <SegmentedControl
               role="tablist"
-              aria-label={t("reliability.audit.filterAria")}
-            >
-              {auditChips.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  role="tab"
-                  className={
-                    "settings-seg__btn reliab-timeline__chip" +
-                    (auditEvent === c.id ? " is-on" : "")
-                  }
-                  aria-selected={auditEvent === c.id}
-                  data-testid={`reliab-audit-filter-${c.id}`}
-                  onClick={() => setAuditEvent(c.id)}
-                >
-                  {c.label}
-                </button>
-              ))}
-            </div>
+              ariaLabel={t("reliability.audit.filterAria")}
+              className="reliab-timeline__chips"
+              value={auditEvent}
+              options={auditChips.map((c) => ({
+                value: c.id,
+                label: c.label,
+                className: "reliab-timeline__chip",
+                testId: `reliab-audit-filter-${c.id}`,
+              }))}
+              onChange={setAuditEvent}
+            />
 
             <div
               className="reliab-timeline__toolbar"
